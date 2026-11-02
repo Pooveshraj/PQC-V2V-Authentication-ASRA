@@ -1,0 +1,83 @@
+diff -u a/PQCAuthApp.cc b/PQCAuthApp.cc
+--- a/PQCAuthApp.cc	2026-10-30 02:36:03.784569342 +0000
++++ b/PQCAuthApp.cc	2026-10-30 02:36:33.835642851 +0000
+@@ -36,6 +36,7 @@
+         acceptCount = 0;
+         rejectCount = 0;
+         replayDetectedCount = 0;
++        duplicateRejectedCount = 0;
+         lrsVector.setName("LRS");
+         decisionVector.setName("decision");
+         signTimeVector.setName("signTimeUs");
+@@ -45,6 +46,7 @@
+         isAttacker = par("isAttacker").boolValue();
+         asraEnabled = par("asraEnabled").boolValue();
+         freshnessEnabled = par("freshnessEnabled").boolValue();
++        seqCheckEnabled = par("seqCheckEnabled").boolValue();
+         floodInterval = par("floodInterval").doubleValue();
+         floodEvt = nullptr;
+ 
+@@ -123,6 +125,7 @@
+     recordScalar("acceptCount", acceptCount);
+     recordScalar("rejectCount", rejectCount);
+     recordScalar("replayDetectedCount", replayDetectedCount);
++    recordScalar("duplicateRejectedCount", duplicateRejectedCount);
+     recordScalar("invalidSigSentCount", invalidSigSentCount);
+     DemoBaseApplLayer::finish();
+ }
+@@ -178,6 +181,24 @@
+         valid = valid && fresh;
+     }
+ 
++    // Within-window replay check. The timestamp is inside the signed challenge,
++    // so it acts as a per-sender monotone sequence value. A message whose signed
++    // timestamp is not newer than the last accepted one from the same public key
++    // is a duplicate and is rejected, even if it is still inside the window W.
++    const std::string senderKey = wsm->getPublicKeyBytes();
++    if (seqCheckEnabled) {
++        auto it = lastAcceptedTs.find(senderKey);
++        if (it != lastAcceptedTs.end() && msgTimestamp <= it->second) {
++            duplicateRejectedCount++;
++            valid = false;
++        }
++        // Update only after the signature and freshness checks pass, so a
++        // forged or stale message cannot advance the stored value.
++        if (valid) {
++            lastAcceptedTs[senderKey] = msgTimestamp;
++        }
++    }
++
+     bool accepted;
+     double lrsValue = 0.0;  // no meaningful LRS when ASRA is disabled (ablation)
+ 
+diff -u a/PQCAuthApp.h b/PQCAuthApp.h
+--- a/PQCAuthApp.h	2026-10-30 02:36:03.784621424 +0000
++++ b/PQCAuthApp.h	2026-10-30 02:36:33.835331219 +0000
+@@ -4,6 +4,7 @@
+ #include <string>
+ #include <vector>
+ #include <chrono>
++#include <map>
+ extern "C" {
+ #include "vehicle.h"
+ #include "authentication.h"
+@@ -31,6 +32,10 @@
+     long acceptCount;
+     long rejectCount;
+     long replayDetectedCount;
++    // Within-window replay check (rerun Exp. 4): last accepted signed timestamp per sender public key
++    bool seqCheckEnabled;
++    long duplicateRejectedCount;
++    std::map<std::string, double> lastAcceptedTs;
+ 
+     bool isAttacker;
+     bool asraEnabled;
+diff -u a/PQCAuthApp.ned b/PQCAuthApp.ned
+--- a/PQCAuthApp.ned	2026-10-30 02:36:03.784644666 +0000
++++ b/PQCAuthApp.ned	2026-10-30 02:36:33.835470165 +0000
+@@ -13,4 +13,5 @@
+     double invalidSigInterval @unit(s) = default(1.5s);
+     bool asraEnabled = default(true);
+     bool freshnessEnabled = default(true);
++    bool seqCheckEnabled = default(false);
+ }
